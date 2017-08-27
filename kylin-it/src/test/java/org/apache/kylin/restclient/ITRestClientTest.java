@@ -22,11 +22,18 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 
 import java.io.File;
+import java.io.IOException;
 import java.util.HashMap;
 import java.util.Random;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.apache.commons.io.FileUtils;
 import org.apache.http.HttpResponse;
+import org.apache.http.client.methods.HttpPost;
+import org.apache.http.client.methods.HttpPut;
+import org.apache.http.client.utils.HttpClientUtils;
+import org.apache.http.entity.StringEntity;
+import org.apache.http.util.EntityUtils;
 import org.apache.kylin.common.restclient.RestClient;
 import org.apache.kylin.common.util.HBaseMetadataTestCase;
 import org.eclipse.jetty.server.Server;
@@ -77,28 +84,28 @@ public class ITRestClientTest extends HBaseMetadataTestCase {
 
     @Test
     public void testGetCube() throws Exception {
-        RestClient client = new RestClient(HOST, PORT, USERNAME, PASSWD);
+        ITRestClient client = new ITRestClient(HOST, PORT, USERNAME, PASSWD);
         HashMap result = client.getCube(CUBE_NAME);
         assertEquals("READY", result.get("status"));
     }
 
     @Test
     public void testChangeCubeStatus() throws Exception {
-        RestClient client = new RestClient(HOST, PORT, USERNAME, PASSWD);
+        ITRestClient client = new ITRestClient(HOST, PORT, USERNAME, PASSWD);
         assertTrue(client.disableCube(CUBE_NAME));
         assertTrue(client.enableCube(CUBE_NAME));
     }
 
     @Test
     public void testChangeCache() throws Exception {
-        RestClient client = new RestClient(HOST, PORT, USERNAME, PASSWD);
+        ITRestClient client = new ITRestClient(HOST, PORT, USERNAME, PASSWD);
         assertTrue(client.disableCache());
         assertTrue(client.enableCache());
     }
 
     @Test
     public void testQuery() throws Exception {
-        RestClient client = new RestClient(HOST, PORT, USERNAME, PASSWD);
+        ITRestClient client = new ITRestClient(HOST, PORT, USERNAME, PASSWD);
         String sql = "select count(*) from TEST_KYLIN_FACT; ";
         HttpResponse result = client.query(sql, PROJECT_NAME);
     }
@@ -146,6 +153,111 @@ public class ITRestClientTest extends HBaseMetadataTestCase {
                     System.setProperty(key, value);
             }
             backup.clear();
+        }
+    }
+
+    public class ITRestClient extends RestClient{
+
+        public ITRestClient(String uri) {
+            super(uri);
+        }
+
+        public ITRestClient(String host, int port, String username, String passwd) {
+            super(host, port, username, passwd);
+        }
+
+        boolean enableCache() throws IOException {
+            return setCache(true);
+        }
+
+        boolean disableCache() throws IOException {
+            return setCache(false);
+        }
+
+        boolean disableCube(String cubeName) throws Exception {
+            return changeCubeStatus(baseUrl + "/cubes/" + cubeName + "/disable");
+        }
+
+        boolean enableCube(String cubeName) throws Exception {
+            return changeCubeStatus(baseUrl + "/cubes/" + cubeName + "/enable");
+        }
+
+        boolean purgeCube(String cubeName) throws Exception {
+            return changeCubeStatus(baseUrl + "/cubes/" + cubeName + "/purge");
+        }
+
+        private boolean changeCubeStatus(String url) throws Exception {
+            HttpPut put = newPut(url);
+            HashMap<String, String> paraMap = new HashMap<String, String>();
+            String jsonMsg = new ObjectMapper().writeValueAsString(paraMap);
+            put.setEntity(new StringEntity(jsonMsg, "UTF-8"));
+            HttpResponse response = null;
+
+            try {
+                response = client.execute(put);
+                String result = getContent(response);
+                if (response.getStatusLine().getStatusCode() != 200) {
+                    throw new IOException("Invalid response " + response.getStatusLine().getStatusCode() + " with url " + url + "\n" + jsonMsg);
+                } else {
+                    return true;
+                }
+            } finally {
+                HttpClientUtils.closeQuietly(response);
+                put.releaseConnection();
+            }
+        }
+
+        private boolean setCache(boolean flag) throws IOException {
+            String url = baseUrl + "/admin/config";
+            HttpPut put = newPut(url);
+            HashMap<String, String> paraMap = new HashMap<String, String>();
+            paraMap.put("key", "kylin.query.cache-enabled");
+            paraMap.put("value", flag + "");
+            put.setEntity(new StringEntity(new ObjectMapper().writeValueAsString(paraMap), "UTF-8"));
+            HttpResponse response = client.execute(put);
+            EntityUtils.consume(response.getEntity());
+            if (response.getStatusLine().getStatusCode() != 200) {
+                return false;
+            } else {
+                return true;
+            }
+        }
+
+        boolean buildCube(String cubeName, long startTime, long endTime, String buildType) throws Exception {
+            String url = baseUrl + "/cubes/" + cubeName + "/build";
+            HttpPut request = newPut(url);
+            HashMap<String, String> paraMap = new HashMap<String, String>();
+            paraMap.put("startTime", startTime + "");
+            paraMap.put("endTime", endTime + "");
+            paraMap.put("buildType", buildType);
+            String jsonMsg = new ObjectMapper().writeValueAsString(paraMap);
+            request.setEntity(new StringEntity(jsonMsg, "UTF-8"));
+
+            HttpResponse response = null;
+            try {
+                response = client.execute(request);
+                String result = getContent(response);
+                if (response.getStatusLine().getStatusCode() != 200) {
+                    throw new IOException("Invalid response " + response.getStatusLine().getStatusCode() + " with build cube url " + url + "\n" + jsonMsg);
+                } else {
+                    return true;
+                }
+            } finally {
+                HttpClientUtils.closeQuietly(response);
+                request.releaseConnection();
+            }
+        }
+
+        public HttpResponse query(String sql, String project) throws IOException {
+            String url = baseUrl + "/query";
+            HttpPost post = newPost(url);
+            HashMap<String, String> paraMap = new HashMap<String, String>();
+            paraMap.put("sql", sql);
+            paraMap.put("project", project);
+            String jsonMsg = new ObjectMapper().writeValueAsString(paraMap);
+            post.setEntity(new StringEntity(jsonMsg, "UTF-8"));
+            HttpResponse response = client.execute(post);
+            return response;
         }
     }
 }
